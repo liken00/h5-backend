@@ -622,9 +622,9 @@ def admin_page():
 import hashlib
 import secrets
 
-# 微信OAuth配置（需填写真实AppID和AppSecret）
-WECHAT_APP_ID = os.environ.get('WECHAT_APP_ID', '')
-WECHAT_APP_SECRET = os.environ.get('WECHAT_APP_SECRET', '')
+# 微信OAuth配置（硬编码，演示用）
+WECHAT_APP_ID = 'wxfdefe2ad09eb5af7'
+WECHAT_APP_SECRET = 'c212f6ced284d62de00615bb631a1797'
 
 
 def generate_user_session(user_id):
