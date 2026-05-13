@@ -700,7 +700,7 @@ def do_send_sms(phone, code):
 
         # 0=成功, 30=密码错误, 41=余额不足, 42=账号异常, 43=黑名单
         if result == '0':
-            return jsonify({'code': 0, 'msg': '发送成功'})
+            return jsonify({'code': 0, 'msg': '发送成功', 'debug_code': code})
         else:
             error_map = {
                 '30': '短信宝账号密码错误',
