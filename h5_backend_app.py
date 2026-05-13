@@ -13,6 +13,7 @@ import sqlite3
 import uuid
 import random
 import os
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
@@ -58,6 +59,28 @@ def init_db():
             new_visitors INTEGER DEFAULT 0,
             new_invites INTEGER DEFAULT 0,
             total_pv INTEGER DEFAULT 0
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT UNIQUE,
+            wechat_openid TEXT UNIQUE,
+            nickname TEXT,
+            avatar TEXT,
+            vip_expiry TIMESTAMP,
+            invite_code TEXT UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS sms_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT NOT NULL,
+            code TEXT NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            used INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     conn.commit()
@@ -592,6 +615,290 @@ def admin_page():
 </html>
     '''
     return html
+
+
+# ============ 登录认证 API ============
+
+import hashlib
+import secrets
+
+# 微信OAuth配置（需填写真实AppID和AppSecret）
+WECHAT_APP_ID = os.environ.get('WECHAT_APP_ID', '')
+WECHAT_APP_SECRET = os.environ.get('WECHAT_APP_SECRET', '')
+
+
+def generate_user_session(user_id):
+    """生成简单会话token"""
+    token = secrets.token_hex(16)
+    # 简单起见，用dict模拟会话存储（生产环境用Redis）
+    if not hasattr(app, '_sessions'):
+        app._sessions = {}
+    app._sessions[token] = {
+        'user_id': user_id,
+        'expires': datetime.datetime.now() + datetime.timedelta(days=7)
+    }
+    return token
+
+
+def verify_session(token):
+    """验证会话token"""
+    if not hasattr(app, '_sessions'):
+        return None
+    session = app._sessions.get(token)
+    if not session:
+        return None
+    if session['expires'] < datetime.datetime.now():
+        del app._sessions[token]
+        return None
+    return session['user_id']
+
+
+def get_user_from_db(user_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT id, phone, nickname, avatar, vip_expiry, invite_code, created_at FROM users WHERE id = ?', (user_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {
+            'id': row[0], 'phone': row[1], 'nickname': row[2],
+            'avatar': row[3], 'vip_expiry': row[4],
+            'invite_code': row[5], 'created_at': row[6]
+        }
+    return None
+
+
+def make_code():
+    """生成6位验证码"""
+    return str(random.randint(100000, 999999))
+
+
+@app.route('/api/auth/send_code', methods=['POST'])
+def send_sms_code():
+    """发送短信验证码"""
+    data = request.get_json() or {}
+    phone = data.get('phone', '').strip()
+
+    # 验证手机号格式
+    if not phone or len(phone) != 11 or not phone.startswith('1'):
+        return jsonify({'code': 1, 'msg': '手机号格式错误'}), 400
+
+    code = make_code()
+    expires_at = datetime.datetime.now() + datetime.timedelta(minutes=5)
+
+    conn = get_db()
+    c = conn.cursor()
+
+    # 标记旧验证码为已使用
+    c.execute('UPDATE sms_codes SET used = 1 WHERE phone = ?', (phone,))
+
+    # 插入新验证码
+    c.execute('INSERT INTO sms_codes (phone, code, expires_at) VALUES (?, ?, ?)',
+              (phone, code, expires_at))
+    conn.commit()
+    conn.close()
+
+    # 实际发送短信（演示环境打印到日志）
+    # 生产环境：集成腾讯云/阿里云SMS API
+    print(f'【SMS DEBUG】向 {phone} 发送验证码: {code}')
+
+    return jsonify({
+        'code': 0,
+        'msg': '发送成功',
+        # ⚠️ 演示环境直接返回验证码（生产环境删除此行！）
+        'debug_code': code
+    })
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def login_with_code():
+    """验证码登录/注册"""
+    data = request.get_json() or {}
+    phone = data.get('phone', '').strip()
+    code = data.get('code', '').strip()
+
+    if not phone or not code:
+        return jsonify({'code': 1, 'msg': '手机号和验证码不能为空'}), 400
+
+    conn = get_db()
+    c = conn.cursor()
+
+    # 验证验证码
+    c.execute('''
+        SELECT id FROM sms_codes
+        WHERE phone = ? AND code = ? AND used = 0 AND expires_at > ?
+        ORDER BY id DESC LIMIT 1
+    ''', (phone, code, datetime.datetime.now()))
+    row = c.fetchone()
+
+    if not row:
+        conn.close()
+        return jsonify({'code': 1, 'msg': '验证码错误或已过期'}), 400
+
+    # 标记验证码已使用
+    c.execute('UPDATE sms_codes SET used = 1 WHERE phone = ? AND code = ?', (phone, code))
+
+    # 查找或创建用户
+    c.execute('SELECT id FROM users WHERE phone = ?', (phone,))
+    user_row = c.fetchone()
+
+    if user_row:
+        user_id = user_row[0]
+    else:
+        # 新用户：创建账户
+        nickname = f'用户{phone[-4:]}'
+        invite_code = f'QM{phone[-8:].upper()}'
+        c.execute('''
+            INSERT INTO users (phone, nickname, invite_code, vip_expiry)
+            VALUES (?, ?, ?, ?)
+        ''', (phone, nickname, invite_code,
+              datetime.datetime.now() + datetime.timedelta(days=7)))
+        user_id = c.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    # 生成会话
+    token = generate_user_session(user_id)
+    user = get_user_from_db(user_id)
+
+    return jsonify({'code': 0, 'data': {
+        'token': token,
+        'user': user
+    }})
+
+
+@app.route('/api/auth/wechat/qr', methods=['GET'])
+def wechat_login_qr():
+    """获取微信授权二维码URL"""
+    if not WECHAT_APP_ID:
+        return jsonify({
+            'code': 0,
+            'data': {
+                'qr_url': None,
+                'mock': True,
+                'msg': '微信登录需要在环境变量配置 WECHAT_APP_ID 和 WECHAT_APP_SECRET'
+            }
+        })
+
+    # 生成state参数防止CSRF
+    state = secrets.token_hex(8)
+    if not hasattr(app, '_wechat_states'):
+        app._wechat_states = {}
+    app._wechat_states[state] = datetime.datetime.now() + datetime.timedelta(minutes=5)
+
+    redirect_uri = 'https://h5-backend-tgoe.onrender.com/api/auth/wechat/callback'
+    auth_url = (
+        f'https://open.weixin.qq.com/connect/oauth2/authorize'
+        f'?appid={WECHAT_APP_ID}'
+        f'&redirect_uri={urllib.parse.quote(redirect_uri)}'
+        f'&response_type=code&scope=snsapi_userinfo'
+        f'&state={state}#wechat_redirect'
+    )
+    return jsonify({'code': 0, 'data': {'qr_url': auth_url}})
+
+
+@app.route('/api/auth/wechat/callback', methods=['GET'])
+def wechat_callback():
+    """微信OAuth回调"""
+    code = request.args.get('code', '')
+    state = request.args.get('state', '')
+    errcode = request.args.get('errcode', '')
+
+    if errcode:
+        return jsonify({'code': 1, 'msg': f'微信授权失败: {errcode}'}), 400
+
+    if not hasattr(app, '_wechat_states') or state not in app._wechat_states:
+        return jsonify({'code': 1, 'msg': 'state无效或已过期'}), 400
+
+    del app._wechat_states[state]
+
+    if not WECHAT_APP_ID or not WECHAT_APP_SECRET:
+        return jsonify({'code': 1, 'msg': '未配置微信AppID'}), 400
+
+    # 换取access_token和openid
+    token_url = (
+        f'https://api.weixin.qq.com/sns/oauth2/access_token'
+        f'?appid={WECHAT_APP_ID}&secret={WECHAT_APP_SECRET}&code={code}&grant_type=authorization_code'
+    )
+    try:
+        resp = requests.get(token_url, timeout=10)
+        token_data = resp.json()
+        openid = token_data.get('openid')
+        access_token = token_data.get('access_token')
+    except Exception:
+        return jsonify({'code': 1, 'msg': '微信服务器通信失败'}), 500
+
+    if not openid:
+        return jsonify({'code': 1, 'msg': '获取openid失败'}), 500
+
+    # 获取用户信息
+    user_info_url = f'https://api.weixin.qq.com/sns/userinfo?access_token={access_token}&openid={openid}'
+    try:
+        resp2 = requests.get(user_info_url, timeout=10)
+        wx_user = resp2.json()
+        nickname = wx_user.get('nickname', '微信用户')
+        avatar = wx_user.get('headimgurl', '')
+    except Exception:
+        nickname = '微信用户'
+        avatar = ''
+
+    # 查找或创建用户
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT id FROM users WHERE wechat_openid = ?', (openid,))
+    user_row = c.fetchone()
+
+    if user_row:
+        user_id = user_row[0]
+    else:
+        invite_code = f'WX{openid[-8:].upper()}'
+        c.execute('''
+            INSERT INTO users (wechat_openid, nickname, avatar, invite_code, vip_expiry)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (openid, nickname, avatar, invite_code,
+              datetime.datetime.now() + datetime.timedelta(days=7)))
+        user_id = c.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    token = generate_user_session(user_id)
+    user = get_user_from_db(user_id)
+
+    # 返回简单页面，前端从这个页面提取token跳转回主页
+    html = f'''
+    <!DOCTYPE html>
+    <html>
+    <body>
+    <script>
+    localStorage.setItem('auth_token', '{token}');
+    localStorage.setItem('user_id', '{user_id}');
+    window.location.href = '/?logged_in=1';
+    </script>
+    <p>登录成功，正在跳转...</p>
+    </body>
+    </html>
+    '''
+    return html
+
+
+@app.route('/api/auth/status', methods=['GET'])
+def auth_status():
+    """检查登录状态"""
+    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    if not token:
+        return jsonify({'code': 0, 'data': {'logged_in': False}})
+
+    user_id = verify_session(token)
+    if not user_id:
+        return jsonify({'code': 0, 'data': {'logged_in': False}})
+
+    user = get_user_from_db(user_id)
+    if not user:
+        return jsonify({'code': 0, 'data': {'logged_in': False}})
+
+    return jsonify({'code': 0, 'data': {'logged_in': True, 'user': user}})
 
 
 if __name__ == '__main__':
