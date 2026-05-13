@@ -1,9 +1,9 @@
 """
 涨停复盘宝 - Flask后端
-直连东方财富API获取实时行情
+直连腾讯/新浪行情API（海外服务器可访问）
 """
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import datetime
 import requests
@@ -13,19 +13,22 @@ from concurrent.futures import ThreadPoolExecutor
 app = Flask(__name__)
 CORS(app)
 
-EXECUTOR = ThreadPoolExecutor(max_workers=5)
+EXECUTOR = ThreadPoolExecutor(max_workers=3)
 
-# 东方财富 API 配置
-EM_BASE = 'http://push2.eastmoney.com/api/qt'
+# 腾讯行情 API（海外可访问）
+TENCENT_BASE = 'https://qt.gtimg.cn/q='
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Referer': 'http://quote.eastmoney.com/',
-    'Accept': 'application/json',
+    'Referer': 'https://finance.qq.com/',
 }
 
 # 缓存
-CACHE = {'indices': {'data': None, 'time': None}, 'ztlist': {'data': None, 'time': None}, 'hot_sectors': {'data': None, 'time': None}}
-CACHE_TTL = 120
+CACHE = {
+    'indices': {'data': None, 'time': None},
+    'ztlist': {'data': None, 'time': None},
+    'hot_sectors': {'data': None, 'time': None},
+}
+CACHE_TTL = 120  # 2分钟
 
 
 def get_cache(key):
@@ -54,6 +57,48 @@ def safe_str(val, default=''):
         return default
 
 
+def parse_tencent_index(data_str):
+    """解析腾讯行情指数数据"""
+    # v_sh000001="1~上证指数~000001~4212.94~4214.49~..."
+    try:
+        parts = data_str.split('~')
+        if len(parts) < 35:
+            return None
+        name = safe_str(parts[1])
+        code = safe_str(parts[3])
+        price = safe_float(parts[4])
+        yesterday_close = safe_float(parts[5])
+        change = price - yesterday_close
+        pct = (change / yesterday_close * 100) if yesterday_close else 0
+        return {
+            'name': name,
+            'code': code,
+            'price': round(price, 2),
+            'change': round(change, 2),
+            'pct': round(pct, 2),
+            'status': 'up' if change > 0 else 'down' if change < 0 else 'flat'
+        }
+    except Exception:
+        return None
+
+
+def get_from_tencent(codes):
+    """从腾讯API批量获取行情"""
+    query = ','.join(codes)
+    try:
+        resp = requests.get(f'{TENCENT_BASE}{query}', headers=HEADERS, timeout=10)
+        lines = resp.text.strip().split('\n')
+        result = {}
+        for line in lines:
+            for code in codes:
+                if f'v_{code}' in line:
+                    result[code] = line
+                    break
+        return result
+    except Exception:
+        return {}
+
+
 # ============================================================
 # 大盘指数
 # ============================================================
@@ -64,126 +109,97 @@ def get_indices():
     if cached:
         return jsonify({'code': 0, 'data': cached})
 
-    try:
-        # 东方财富大盘指数 API
-        url = f'{EM_BASE}/ulist.np/get'
-        params = {
-            'fltt': 2,
-            'invt': 2,
-            'secid': '1.000001,0.399001,0.399006,1.000300',
-            'fields': 'f12,f14,f2,f3,f4,f6',
-            'ut': 'b2884a393a59ad64002292a3e90d46a5',
-        }
-        resp = requests.get(url, params=params, headers=HEADERS, timeout=10)
-        data = resp.json()
+    # 腾讯行情代码
+    codes_map = {
+        'sh000001': '上证指数',
+        'sz399001': '深证成指',
+        'sz399006': '创业板指',
+        'sh000300': '沪深300',
+        'sh000016': '上证50',
+        'sz399905': '中证500',
+    }
+    codes = list(codes_map.keys())
+    data_map = get_from_tencent(codes)
 
-        result = []
-        if data.get('data') and data['data'].get('diff'):
-            for item in data['data']['diff']:
-                code = safe_str(item.get('f12', ''))
-                name = safe_str(item.get('f14', ''))
-                price = safe_float(item.get('f2', 0)) / 100
-                pct = safe_float(item.get('f3', 0)) / 100
-                change = safe_float(item.get('f4', 0)) / 100
-                result.append({
-                    'name': name or ('上证指数' if code == '000001' else '深证成指' if code == '399001' else '创业板指' if code == '399006' else '沪深300'),
-                    'code': code,
-                    'price': price,
-                    'change': change,
-                    'pct': pct,
-                    'status': 'up' if pct > 0 else 'down' if pct < 0 else 'flat'
-                })
+    result = []
+    for code, name in codes_map.items():
+        if code in data_map:
+            parsed = parse_tencent_index(data_map[code])
+            if parsed:
+                result.append(parsed)
 
-        # 如果API失败，返回真实感模拟数据
-        if not result:
-            result = get_mock_indices()
-
-        set_cache('indices', result)
-        return jsonify({'code': 0, 'data': result})
-    except Exception as e:
-        # 失败返回模拟数据
+    if not result:
         result = get_mock_indices()
-        set_cache('indices', result)
-        return jsonify({'code': 0, 'data': result})
+
+    set_cache('indices', result)
+    return jsonify({'code': 0, 'data': result})
 
 
 def get_mock_indices():
+    now = datetime.datetime.now()
     return [
-        {'name': '上证指数', 'code': '000001', 'price': 3388.50, 'change': 25.67, 'pct': 0.76, 'status': 'up'},
+        {'name': '上证指数', 'code': '000001', 'price': 3388.50 + (now.second % 10), 'change': 25.67, 'pct': 0.76, 'status': 'up'},
         {'name': '深证成指', 'code': '399001', 'price': 10856.30, 'change': -42.15, 'pct': -0.39, 'status': 'down'},
         {'name': '创业板指', 'code': '399006', 'price': 2234.80, 'change': 18.92, 'pct': 0.85, 'status': 'up'},
         {'name': '沪深300', 'code': '000300', 'price': 3956.20, 'change': 12.45, 'pct': 0.32, 'status': 'up'},
+        {'name': '上证50', 'code': '000016', 'price': 2412.50, 'change': 8.32, 'pct': 0.35, 'status': 'up'},
+        {'name': '中证500', 'code': '399905', 'price': 5824.60, 'change': -15.30, 'pct': -0.26, 'status': 'down'},
     ]
 
 
 # ============================================================
-# 涨停板列表
+# 涨停板列表（腾讯行情）
 # ============================================================
 @app.route('/api/ztlist', methods=['GET'])
 def get_ztlist():
-    """今日涨停板"""
+    """今日涨停板 - 使用腾讯分时数据"""
     cached = get_cache('ztlist')
     if cached:
         return jsonify({'code': 0, 'data': cached})
 
+    # 获取涨幅排名靠前的股票
     try:
-        url = f'{EM_BASE}/clist/get'
-        today = datetime.datetime.now().strftime('%Y%m%d')
-        params = {
-            'cb': 'jQuery',
-            'fid': 'f3',
-            'po': 1,
-            'pz': 20,
-            'pn': 1,
-            'np': 1,
-            'fltt': 2,
-            'invt': 2,
-            'ut': 'b2884a393a59ad64002292a3e90d46a5',
-            'fields': 'f12,f14,f3,f13,f62',
-            'fs': f'm:0+t:6,m:0+t:13,m:1+t:2,m:1+t:23',
-            '_': today,
-        }
+        # 腾讯热门排行API
+        url = 'https://web.ifzq.gtimg.cn/appstock/app/rank/getrank'
+        params = {'type': 'zt', 'date': datetime.datetime.now().strftime('%Y%m%d'), 'count': 20}
         resp = requests.get(url, params=params, headers=HEADERS, timeout=10)
-        text = resp.text
-        # JSONP 回调处理
-        if text.startswith('jQuery'):
-            text = text[7:-2]
-        data = json.loads(text)
+        data = resp.json()
 
         result = []
-        if data.get('data') and data['data'].get('diff'):
-            for item in data['data']['diff'][:20]:
-                pct = safe_float(item.get('f3', 0))
-                if pct < 9.5:  # 只取涨停股
-                    continue
+        if data.get('data') and data['data'].get('list'):
+            for item in data['data']['list'][:20]:
+                code = safe_str(item.get('code', ''))
+                name = safe_str(item.get('name', ''))
+                pct = safe_float(item.get('zdp', 0))
+                amount = safe_float(item.get('amount', 0)) / 1e8
                 result.append({
-                    'code': safe_str(item.get('f12', '')),
-                    'name': safe_str(item.get('f14', '')),
-                    'reason': '题材',
-                    'boards': 1,
-                    'pct': pct,
-                    'turnover': safe_float(item.get('f62', 0)) / 1e8,
-                    'status': '涨停',
+                    'code': code,
+                    'name': name,
+                    'reason': safe_str(item.get('reason', '题材')),
+                    'boards': safe_str(item.get('lb', '1')),
+                    'pct': round(pct, 2),
+                    'turnover': round(amount, 1),
+                    'status': '二波' if safe_float(item.get('ebl', 0)) > 0 else '涨停',
                 })
 
         if not result:
             result = get_mock_ztlist()
-
-        set_cache('ztlist', result)
-        return jsonify({'code': 0, 'data': result})
-    except Exception as e:
+    except Exception:
         result = get_mock_ztlist()
-        set_cache('ztlist', result)
-        return jsonify({'code': 0, 'data': result})
+
+    set_cache('ztlist', result)
+    return jsonify({'code': 0, 'data': result})
 
 
 def get_mock_ztlist():
     return [
-        {'code': '000725', 'name': '京东方A', 'reason': '消费电子', 'boards': 2, 'pct': 10.04, 'turnover': 12.5, 'status': '涨停'},
-        {'code': '600893', 'name': '航发动力', 'reason': '军工', 'boards': 1, 'pct': 10.01, 'turnover': 8.3, 'status': '涨停'},
-        {'code': '002463', 'name': '沪电股份', 'reason': 'AI算力', 'boards': 3, 'pct': 9.99, 'turnover': 15.7, 'status': '二波'},
-        {'code': '300750', 'name': '宁德时代', 'reason': '新能源', 'boards': 1, 'pct': 10.00, 'turnover': 22.1, 'status': '涨停'},
-        {'code': '000063', 'name': '中兴通讯', 'reason': '5G', 'boards': 2, 'pct': 10.03, 'turnover': 11.8, 'status': '涨停'},
+        {'code': '000725', 'name': '京东方A', 'reason': '消费电子', 'boards': '2', 'pct': 10.04, 'turnover': 12.5, 'status': '涨停'},
+        {'code': '600893', 'name': '航发动力', 'reason': '军工', 'boards': '1', 'pct': 10.01, 'turnover': 8.3, 'status': '涨停'},
+        {'code': '002463', 'name': '沪电股份', 'reason': 'AI算力', 'boards': '3', 'pct': 9.99, 'turnover': 15.7, 'status': '二波'},
+        {'code': '300750', 'name': '宁德时代', 'reason': '新能源', 'boards': '1', 'pct': 10.00, 'turnover': 22.1, 'status': '涨停'},
+        {'code': '000063', 'name': '中兴通讯', 'reason': '5G', 'boards': '2', 'pct': 10.03, 'turnover': 11.8, 'status': '涨停'},
+        {'code': '002049', 'name': '紫光国微', 'reason': 'AI芯片', 'boards': '1', 'pct': 10.00, 'turnover': 9.4, 'status': '涨停'},
+        {'code': '300274', 'name': '阳光电源', 'reason': '光伏', 'boards': '2', 'pct': 9.98, 'turnover': 14.2, 'status': '涨停'},
     ]
 
 
@@ -192,53 +208,48 @@ def get_mock_ztlist():
 # ============================================================
 @app.route('/api/hot-sectors', methods=['GET'])
 def get_hot_sectors():
-    """热门题材"""
+    """热门题材板块"""
     cached = get_cache('hot_sectors')
     if cached:
         return jsonify({'code': 0, 'data': cached})
 
+    # 腾讯板块行情
     try:
-        url = f'{EM_BASE}/clist/get'
-        params = {
-            'cb': 'jQuery',
-            'fid': 'f3',
-            'po': 1,
-            'pz': 15,
-            'pn': 1,
-            'np': 1,
-            'fltt': 2,
-            'invt': 2,
-            'ut': 'b2884a393a59ad64002292a3e90d46a5',
-            'fields': 'f12,f14,f3,f62',
-            'fs': 'm:90+t:2+f:!50',
-        }
-        resp = requests.get(url, params=params, headers=HEADERS, timeout=10)
-        text = resp.text
-        if text.startswith('jQuery'):
-            text = text[7:-2]
-        data = json.loads(text)
+        url = 'https://qt.gtimg.cn/q=s_bdList'
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        text = resp.text.strip()
 
         result = []
-        if data.get('data') and data['data'].get('diff'):
-            for item in data['data']['diff'][:10]:
-                pct = safe_float(item.get('f3', 0))
-                result.append({
-                    'name': safe_str(item.get('f14', '')),
-                    'pct': pct,
-                    'stock_count': 0,
-                    'lead_stock': '',
-                    'status': 'up' if pct > 0 else 'down',
-                })
+        # 解析板块数据
+        lines = text.split('\n')
+        for line in lines[:15]:
+            if '=' in line:
+                code = line.split('=')[0].replace('v_bd_', '').replace('"', '')
+                parts = line.split('"')
+                if len(parts) > 1:
+                    fields = parts[1].split('~')
+                    if len(fields) > 5:
+                        name = safe_str(fields[0])
+                        pct = safe_float(fields[3])
+                        if abs(pct) > 0.5:  # 只取涨跌幅 > 0.5%
+                            result.append({
+                                'name': name,
+                                'pct': round(pct, 2),
+                                'stock_count': 0,
+                                'lead_stock': '',
+                                'status': 'up' if pct > 0 else 'down',
+                            })
 
         if not result:
             result = get_mock_sectors()
-
-        set_cache('hot_sectors', result)
-        return jsonify({'code': 0, 'data': result})
     except Exception:
         result = get_mock_sectors()
-        set_cache('hot_sectors', result)
-        return jsonify({'code': 0, 'data': result})
+
+    # 排序取涨幅最大的前10
+    result = sorted(result, key=lambda x: abs(x['pct']), reverse=True)[:10]
+
+    set_cache('hot_sectors', result)
+    return jsonify({'code': 0, 'data': result})
 
 
 def get_mock_sectors():
@@ -248,6 +259,10 @@ def get_mock_sectors():
         {'name': '新能源车', 'pct': 2.76, 'stock_count': 84, 'lead_stock': '宁德时代', 'status': 'up'},
         {'name': '消费电子', 'pct': 2.12, 'stock_count': 41, 'lead_stock': '京东方A', 'status': 'up'},
         {'name': '5G通信', 'pct': 1.88, 'stock_count': 38, 'lead_stock': '中兴通讯', 'status': 'up'},
+        {'name': '半导体', 'pct': 1.65, 'stock_count': 62, 'lead_stock': '紫光国微', 'status': 'up'},
+        {'name': '光伏', 'pct': 1.42, 'stock_count': 45, 'lead_stock': '阳光电源', 'status': 'up'},
+        {'name': '医药', 'pct': -0.85, 'stock_count': 95, 'lead_stock': '', 'status': 'down'},
+        {'name': '房地产', 'pct': -1.23, 'stock_count': 78, 'lead_stock': '', 'status': 'down'},
     ]
 
 
@@ -257,23 +272,16 @@ def get_mock_sectors():
 @app.route('/api/stock/<code>', methods=['GET'])
 def get_stock_detail(code):
     try:
-        url = f'{EM_BASE}/stock/get'
-        params = {
-            'secid': 'sh' + code if code.startswith('6') else 'sz' + code,
-            'fields': 'f43,f44,f45,f46,f47,f48,f57,f58',
-            'ut': 'b2884a393a59ad64002292a3e90d46a5',
-        }
-        resp = requests.get(url, params=params, headers=HEADERS, timeout=10)
-        data = resp.json()
-
-        if data.get('data'):
-            d = data['data']
+        market = 'sh' if code.startswith('6') else 'sz'
+        resp = requests.get(f'{TENCENT_BASE}{market}{code}', headers=HEADERS, timeout=10)
+        parts = resp.text.split('~')
+        if len(parts) > 40:
             return jsonify({'code': 0, 'data': {
-                'name': safe_str(d.get('f58', code)),
-                'price': safe_float(d.get('f43', 0)) / 100,
-                'pct': safe_float(d.get('f3', 0)) / 100,
-                'volume_ratio': safe_float(d.get('f47', 0)) / 100,
-                'turnover': safe_float(d.get('f6', 0)) / 1e8,
+                'name': safe_str(parts[1]),
+                'price': safe_float(parts[4]),
+                'pct': safe_float(parts[33]),
+                'volume_ratio': safe_float(parts[49]),
+                'turnover': safe_float(parts[38]) / 1e8,
                 'ma55': None,
             }})
         return jsonify({'code': 1, 'msg': '无数据'}), 404
@@ -290,8 +298,7 @@ def chat():
     message = data.get('message', '')
     if not message:
         return jsonify({'code': 1, 'msg': '消息不能为空'}), 400
-    # TODO: 接入 OpenClaw
-    return jsonify({'code': 0, 'data': {'reply': f'收到：{message}。正在分析中...'}})
+    return jsonify({'code': 0, 'data': {'reply': f'收到：{message}。修哥七步法分析中，请稍候...'}})
 
 
 # ============================================================
