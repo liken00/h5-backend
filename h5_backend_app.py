@@ -770,7 +770,7 @@ def login_with_code():
 
 @app.route('/api/auth/wechat/qr', methods=['GET'])
 def wechat_login_qr():
-    """获取微信授权二维码URL"""
+    """获取微信登录状态轮询URL（扫码登录）"""
     if not WECHAT_APP_ID:
         return jsonify({
             'code': 0,
@@ -781,11 +781,11 @@ def wechat_login_qr():
             }
         })
 
-    # 生成state参数防止CSRF
-    state = secrets.token_hex(8)
+    # 生成state参数用于标识本次登录会话
+    state = secrets.token_hex(16)
     if not hasattr(app, '_wechat_states'):
         app._wechat_states = {}
-    app._wechat_states[state] = datetime.datetime.now() + datetime.timedelta(minutes=5)
+    app._wechat_states[state] = {'created': datetime.datetime.now(), 'authenticated': False, 'token': None, 'user': None}
 
     redirect_uri = 'https://h5-backend-tgoe.onrender.com/api/auth/wechat/callback'
     auth_url = (
@@ -795,7 +795,35 @@ def wechat_login_qr():
         f'&response_type=code&scope=snsapi_userinfo'
         f'&state={state}#wechat_redirect'
     )
-    return jsonify({'code': 0, 'data': {'qr_url': auth_url}})
+
+    return jsonify({
+        'code': 0,
+        'data': {
+            'state': state,
+            'auth_url': auth_url,
+            'poll_url': f'https://h5-backend-tgoe.onrender.com/api/auth/wechat/poll/{state}'
+        }
+    })
+
+
+@app.route('/api/auth/wechat/poll/<state>', methods=['GET'])
+def wechat_login_poll(state):
+    """轮询微信登录状态"""
+    if not hasattr(app, '_wechat_states') or state not in app._wechat_states:
+        return jsonify({'code': 1, 'msg': 'state无效'})
+
+    entry = app._wechat_states[state]
+    if not entry['authenticated']:
+        return jsonify({'code': 0, 'data': {'ready': False}})
+
+    return jsonify({
+        'code': 0,
+        'data': {
+            'ready': True,
+            'token': entry['token'],
+            'user': entry['user']
+        }
+    })
 
 
 @app.route('/api/auth/wechat/callback', methods=['GET'])
@@ -811,7 +839,7 @@ def wechat_callback():
     if not hasattr(app, '_wechat_states') or state not in app._wechat_states:
         return jsonify({'code': 1, 'msg': 'state无效或已过期'}), 400
 
-    del app._wechat_states[state]
+    entry = app._wechat_states[state]
 
     if not WECHAT_APP_ID or not WECHAT_APP_SECRET:
         return jsonify({'code': 1, 'msg': '未配置微信AppID'}), 400
@@ -866,17 +894,26 @@ def wechat_callback():
     token = generate_user_session(user_id)
     user = get_user_from_db(user_id)
 
-    # 返回简单页面，前端从这个页面提取token跳转回主页
+    # 标记认证完成，H5轮询会拿到结果
+    entry['authenticated'] = True
+    entry['token'] = token
+    entry['user'] = user
+
+    # 返回成功页面（回调会显示这个）
     html = f'''
     <!DOCTYPE html>
     <html>
     <body>
-    <script>
-    localStorage.setItem('auth_token', '{token}');
-    localStorage.setItem('user_id', '{user_id}');
-    window.location.href = '/?logged_in=1';
-    </script>
-    <p>登录成功，正在跳转...</p>
+    <div style="text-align:center;padding-top:50px;font-family:sans-serif;">
+        <h2 style="color:#52c41a;">✅ 授权成功</h2>
+        <p>可以关闭此页面了</p>
+        <script>
+        if (window.opener) {{
+            window.opener.postMessage({{token: '{token}', user_id: '{user_id}'}}, '*');
+        }}
+        setTimeout(() => window.close(), 2000);
+        </script>
+    </div>
     </body>
     </html>
     '''
