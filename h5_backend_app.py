@@ -333,9 +333,11 @@ def register_invite_code():
 
 @app.route('/api/indices', methods=['GET'])
 def get_indices():
-    cached = get_cache('indices')
-    if cached:
-        return jsonify({'code': 0, 'data': cached})
+    # refresh=true 绕过缓存
+    if request.args.get('refresh') != 'true':
+        cached = get_cache('indices')
+        if cached:
+            return jsonify({'code': 0, 'data': cached})
 
     codes_map = {
         'sh000001': '上证指数',
@@ -372,14 +374,14 @@ def get_mock_indices():
 
 @app.route('/api/ztlist', methods=['GET'])
 def get_ztlist():
-    cached = get_cache('ztlist')
-    if cached:
-        return jsonify({'code': 0, 'data': cached})
+    if request.args.get('refresh') != 'true':
+        cached = get_cache('ztlist')
+        if cached:
+            return jsonify({'code': 0, 'data': cached})
 
     result = get_mock_ztlist()
     set_cache('ztlist', result)
     return jsonify({'code': 0, 'data': result})
-
 
 def get_mock_ztlist():
     return [
@@ -395,9 +397,10 @@ def get_mock_ztlist():
 
 @app.route('/api/hot-sectors', methods=['GET'])
 def get_hot_sectors():
-    cached = get_cache('hot_sectors')
-    if cached:
-        return jsonify({'code': 0, 'data': cached})
+    if request.args.get('refresh') != 'true':
+        cached = get_cache('hot_sectors')
+        if cached:
+            return jsonify({'code': 0, 'data': cached})
 
     result = get_mock_sectors()
     set_cache('hot_sectors', result)
