@@ -70,6 +70,8 @@ def init_db():
             avatar TEXT,
             vip_expiry TIMESTAMP,
             invite_code TEXT UNIQUE,
+            auto_token TEXT,
+            auto_token_expiry TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -762,8 +764,20 @@ def login_with_code():
     token = generate_user_session(user_id)
     user = get_user_from_db(user_id)
 
+    # 生成7天免登录token
+    auto_token = secrets.token_hex(16)
+    auto_expiry = datetime.datetime.now() + datetime.timedelta(days=7)
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('UPDATE users SET auto_token = ?, auto_token_expiry = ? WHERE id = ?',
+              (auto_token, auto_expiry, user_id))
+    conn.commit()
+    conn.close()
+
     return jsonify({'code': 0, 'data': {
         'token': token,
+        'auto_token': auto_token,
         'user': user
     }})
 
@@ -936,6 +950,48 @@ def auth_status():
         return jsonify({'code': 0, 'data': {'logged_in': False}})
 
     return jsonify({'code': 0, 'data': {'logged_in': True, 'user': user}})
+
+
+@app.route('/api/auth/auto_login', methods=['POST'])
+def auto_login():
+    """检测auto_token自动登录"""
+    auto_token = request.headers.get('X-Auto-Token', '').strip()
+    if not auto_token:
+        return jsonify({'code': 1, 'msg': '缺少auto_token'})
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''
+        SELECT id FROM users
+        WHERE auto_token = ? AND auto_token_expiry > ?
+    ''', (auto_token, datetime.datetime.now()))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'code': 1, 'msg': '登录状态已过期，请重新验证'})
+
+    user_id = row[0]
+    conn.close()
+
+    token = generate_user_session(user_id)
+    user = get_user_from_db(user_id)
+
+    return jsonify({'code': 0, 'data': {'token': token, 'user': user}})
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+def logout():
+    """退出登录：清除auto_token"""
+    auto_token = request.headers.get('X-Auto-Token', '').strip()
+    if auto_token:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('UPDATE users SET auto_token = NULL, auto_token_expiry = NULL WHERE auto_token = ?',
+                  (auto_token,))
+        conn.commit()
+        conn.close()
+
+    return jsonify({'code': 0, 'msg': '已退出登录'})
 
 
 if __name__ == '__main__':
