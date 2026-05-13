@@ -692,7 +692,7 @@ def do_send_sms(phone, code):
             'u': SMSBAO_USERNAME,
             'p': pwd,
             'm': phone,
-            'c': f'您的验证码是{code}，5分钟有效。'
+            'c': f'【广西晶晶亮新能源科技有限公司】您的验证码是{code}。如非本人操作，请忽略本短信'
         })
         req = urllib.request.Request(f"{SMS_SEND_URL}?{params}")
         resp = urllib.request.urlopen(req, timeout=10)
