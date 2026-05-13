@@ -675,6 +675,45 @@ def make_code():
     return str(random.randint(100000, 999999))
 
 
+def do_send_sms(phone, code):
+    """通过短信宝发送真实短信"""
+    import hashlib
+    import urllib.request
+
+    SMSBAO_USERNAME = 'kenli'
+    SMSBAO_API_KEY = 'ef5d6a1e7c9a4beba829bbf01dc247f7'
+    SMS_SEND_URL = 'http://api.smsbao.com/sms'
+
+    try:
+        # 密码 = md5(md5(api_key))
+        pwd_md5 = hashlib.md5(SMSBAO_API_KEY.encode()).hexdigest()
+        pwd = hashlib.md5(pwd_md5.encode()).hexdigest()
+
+        params = urllib.parse.urlencode({
+            'u': SMSBAO_USERNAME,
+            'p': pwd,
+            'm': phone,
+            'c': f'【涨停复盘宝】您的验证码是{code}，5分钟有效。'
+        })
+        req = urllib.request.Request(f"{SMS_SEND_URL}?{params}")
+        resp = urllib.request.urlopen(req, timeout=10)
+        result = resp.read().decode()
+
+        # 0=成功, 30=密码错误, 41=余额不足, 42=账号异常, 43=黑名单
+        if result == '0':
+            return jsonify({'code': 0, 'msg': '发送成功'})
+        else:
+            error_map = {
+                '30': '短信宝账号密码错误',
+                '41': '短信宝余额不足（请充值）',
+                '42': '账号异常',
+                '43': '号码在黑名单中'
+            }
+            return jsonify({'code': 1, 'msg': error_map.get(result, f'短信发送失败[{result}]')})
+    except Exception as e:
+        return jsonify({'code': 1, 'msg': f'短信服务异常: {str(e)}'})
+
+
 @app.route('/api/auth/send_code', methods=['POST'])
 def send_sms_code():
     """发送短信验证码"""
@@ -690,26 +729,14 @@ def send_sms_code():
 
     conn = get_db()
     c = conn.cursor()
-
-    # 标记旧验证码为已使用
     c.execute('UPDATE sms_codes SET used = 1 WHERE phone = ?', (phone,))
-
-    # 插入新验证码
     c.execute('INSERT INTO sms_codes (phone, code, expires_at) VALUES (?, ?, ?)',
               (phone, code, expires_at))
     conn.commit()
     conn.close()
 
-    # 实际发送短信（演示环境打印到日志）
-    # 生产环境：集成腾讯云/阿里云SMS API
-    print(f'【SMS DEBUG】向 {phone} 发送验证码: {code}')
-
-    return jsonify({
-        'code': 0,
-        'msg': '发送成功',
-        # ⚠️ 演示环境直接返回验证码（生产环境删除此行！）
-        'debug_code': code
-    })
+    # 实际发送短信（短信宝）
+    return do_send_sms(phone, code)
 
 
 @app.route('/api/auth/login', methods=['POST'])
@@ -783,7 +810,7 @@ def login_with_code():
 
 
 @app.route('/api/auth/wechat/qr', methods=['GET'])
-def wechat_login_qr():
+def wechat_qr():
     """获取微信登录状态轮询URL（扫码登录）"""
     if not WECHAT_APP_ID:
         return jsonify({
