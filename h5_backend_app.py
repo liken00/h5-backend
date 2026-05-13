@@ -421,6 +421,179 @@ def health():
     return jsonify({'status': 'ok', 'time': datetime.datetime.now().isoformat()})
 
 
+@app.route('/admin', methods=['GET'])
+def admin_page():
+    """管理后台页面"""
+    html = '''
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>涨停复盘宝 - 管理后台</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: #0a0e17;
+            color: #fff;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+        .container { max-width: 900px; margin: 0 auto; }
+        h1 { font-size: 1.5rem; margin-bottom: 1.5rem; color: #ffd700; }
+        h2 { font-size: 1.1rem; color: #94a3b8; margin: 1.5rem 0 0.75rem; }
+        .stats-row { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem; }
+        .stat-card {
+            background: #111827;
+            border: 1px solid #2a3548;
+            border-radius: 12px;
+            padding: 1.25rem;
+            flex: 1;
+            min-width: 150px;
+        }
+        .stat-label { font-size: 0.75rem; color: #64748b; margin-bottom: 0.5rem; }
+        .stat-value { font-size: 1.75rem; font-weight: 700; color: #ffd700; }
+        .stat-value.green { color: #00d084; }
+        .search-box { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+        .search-box input {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            background: #111827;
+            border: 1px solid #2a3548;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 0.9rem;
+        }
+        .search-box input:focus { outline: none; border-color: #ffd700; }
+        .search-box button {
+            padding: 0.75rem 1.5rem;
+            background: linear-gradient(135deg, #ffd700, #f59e0b);
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        table { width: 100%; border-collapse: collapse; }
+        th {
+            text-align: left;
+            padding: 0.75rem 1rem;
+            background: #111827;
+            color: #64748b;
+            font-size: 0.75rem;
+            font-weight: 600;
+            border-bottom: 1px solid #2a3548;
+        }
+        td {
+            padding: 0.875rem 1rem;
+            border-bottom: 1px solid #1a2035;
+            font-size: 0.85rem;
+        }
+        tr:hover td { background: #111827; }
+        .rank-medal { font-size: 1.2rem; }
+        .level-badge {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 700;
+        }
+        .level-diamond { background: rgba(185, 242, 255, 0.15); color: #b9f2ff; }
+        .level-gold { background: rgba(255, 215, 0, 0.15); color: #ffd700; }
+        .level-bronze { background: rgba(205, 127, 50, 0.15); color: #cd7f32; }
+        .user-detail {
+            background: #111827;
+            border: 1px solid #2a3548;
+            border-radius: 12px;
+            padding: 1.25rem;
+            margin-bottom: 1.5rem;
+        }
+        .user-detail h3 { color: #ffd700; margin-bottom: 0.75rem; }
+        .detail-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+        .detail-item label { font-size: 0.7rem; color: #64748b; display: block; }
+        .detail-item span { font-size: 1rem; font-weight: 600; color: #fff; }
+        .refresh-btn {
+            padding: 0.5rem 1rem;
+            background: #1a2035;
+            border: 1px solid #2a3548;
+            border-radius: 6px;
+            color: #94a3b8;
+            cursor: pointer;
+            font-size: 0.8rem;
+            margin-bottom: 1rem;
+        }
+        .refresh-btn:hover { border-color: #ffd700; color: #ffd700; }
+        .api-link { font-size: 0.75rem; color: #64748b; margin-top: 2rem; word-break: break-all; }
+        .msg { color: #00d084; font-size: 0.85rem; margin-top: 0.5rem; }
+        .msg.error { color: #ff4757; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 涨停复盘宝 - 邀请管理后台</h1>
+        <div class="stats-row">
+            <div class="stat-card"><div class="stat-label">总邀请人数</div><div class="stat-value" id="totalInvites">-</div></div>
+            <div class="stat-card"><div class="stat-label">活跃邀请码</div><div class="stat-value green" id="activeCodes">-</div></div>
+            <div class="stat-card"><div class="stat-label">累计VIP天数</div><div class="stat-value" id="totalVipDays">-</div></div>
+        </div>
+        <h2>🔍 查询邀请码</h2>
+        <div class="search-box">
+            <input type="text" id="searchInput" placeholder="输入邀请码，如 QM2026ABCD" />
+            <button onclick="searchCode()">查询</button>
+        </div>
+        <div id="searchResult"></div>
+        <h2>🏆 邀请排行榜</h2>
+        <button class="refresh-btn" onclick="loadLeaderboard()">🔄 刷新</button>
+        <table>
+            <thead><tr><th>排名</th><th>昵称</th><th>邀请码</th><th>等级</th><th>邀请人数</th><th>VIP天数</th></tr></thead>
+            <tbody id="leaderboardBody"><tr><td colspan="6" style="text-align:center;color:#64748b;padding:2rem;">加载中...</td></tr></tbody>
+        </table>
+        <div class="api-link">
+            API: GET /api/invite/leaderboard | GET /api/invite/stats?code=XXX | POST /api/invite/record<br>
+            后端：https://h5-backend-tgoe.onrender.com | 管理后台：https://h5-backend-tgoe.onrender.com/admin
+        </div>
+    </div>
+    <script>
+        const API = '';
+        function loadLeaderboard() {
+            fetch('/api/invite/leaderboard').then(r => r.json()).then(data => {
+                if (data.code !== 0) return;
+                const leaders = data.data;
+                let totalInvites = 0, totalVipDays = 0;
+                leaders.forEach(l => { totalInvites += l.total_invites; totalVipDays += l.total_vip_days; });
+                document.getElementById('totalInvites').textContent = totalInvites;
+                document.getElementById('activeCodes').textContent = leaders.length;
+                document.getElementById('totalVipDays').textContent = totalVipDays;
+                document.getElementById('leaderboardBody').innerHTML = leaders.map((item, i) => `
+                    <tr><td><span class="rank-medal">${item.medal || (i+1)}</span></td>
+                    <td>${item.owner_name}</td>
+                    <td><code style="color:#94a3b8;font-size:0.8rem">${item.code}</code></td>
+                    <td><span class="level-badge level-${item.level}">${item.level === 'diamond' ? '💎钻石' : item.level === 'gold' ? '🥇黄金' : '🥉青铜'}</span></td>
+                    <td><b style="color:#00d084">${item.total_invites}</b> 人</td>
+                    <td>${item.total_vip_days} 天</td></tr>
+                `).join('');
+            }).catch(() => {});
+        }
+        function searchCode() {
+            const code = document.getElementById('searchInput').value.trim().toUpperCase();
+            if (!code) return;
+            const resultDiv = document.getElementById('searchResult');
+            resultDiv.innerHTML = '<p style="color:#64748b">查询中...</p>';
+            fetch('/api/invite/stats?code=' + code).then(r => r.json()).then(data => {
+                if (data.code === 1) { resultDiv.innerHTML = '<p class="msg error">邀请码不存在</p>'; return; }
+                const d = data.data;
+                resultDiv.innerHTML = '<div class="user-detail"><h3>👤 ' + d.owner_name + '</h3><div class="detail-grid"><div class="detail-item"><label>邀请码</label><span>' + d.code + '</span></div><div class="detail-item"><label>等级</label><span class="level-badge level-' + d.level + '">' + (d.level === 'diamond' ? '💎钻石' : d.level === 'gold' ? '🥇黄金' : '🥉青铜') + '</span></div><div class="detail-item"><label>累计邀请</label><span style="color:#00d084;font-size:1.3rem">' + d.total_invites + '</span> 人</div><div class="detail-item"><label>累计VIP</label><span>' + d.total_vip_days + ' 天</span></div></div><p class="msg">注册时间：' + (d.created_at ? d.created_at.split(' ')[0] : '未知') + '</p></div>';
+            }).catch(() => { resultDiv.innerHTML = '<p class="msg error">查询失败</p>'; });
+        }
+        loadLeaderboard();
+    </script>
+</body>
+</html>
+    '''
+    return html
+
+
 if __name__ == '__main__':
     print('涨停复盘宝后端启动')
     app.run(host='0.0.0.0', port=5000)
