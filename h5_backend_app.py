@@ -416,33 +416,47 @@ def get_mock_sectors():
 
 @app.route('/api/stock/<code>', methods=['GET'])
 def get_stock_detail(code):
+    """获取个股详情 - 腾讯行情API"""
     try:
         market = 'sh' if code.startswith('6') else 'sz'
         resp = requests.get(f'{TENCENT_BASE}{market}{code}', headers=HEADERS, timeout=10)
-        parts = resp.text.split('~')
-        if len(parts) > 40:
-            yesterday_close = safe_float(parts[5])
-            price = safe_float(parts[4])
-            pct = (price - yesterday_close) / yesterday_close * 100 if yesterday_close else 0
-            return jsonify({'code': 0, 'data': {
-                'name': safe_str(parts[1]),
-                'code': code,
-                'price': price,
-                'change': round(price - yesterday_close, 2),
-                'pct': round(pct, 2),
-                'open': safe_float(parts[6]),
-                'high': safe_float(parts[33]),
-                'low': safe_float(parts[34]),
-                'volume': round(safe_float(parts[37]) / 1e8, 2),  # 亿
-                'turnover': safe_float(parts[38]),  # 成交额
-                'amplitude': round((safe_float(parts[33]) - safe_float(parts[34])) / yesterday_close * 100, 2) if yesterday_close else 0,  # 振幅
-                'turnover_rate': safe_float(parts[39]),  # 换手率
-                'market_cap': round(safe_float(parts[45]) / 1e8, 2) if safe_float(parts[45]) else None,  # 总市值亿
-                'sector': safe_str(parts[47]),
-            }})
-        return jsonify({'code': 1, 'msg': '无数据'}), 404
+        # 腾讯单股返回格式: v_sz000725="51~名称~代码~当前价~昨收~今开~..."
+        text = resp.text
+        if 'v_' not in text:
+            return jsonify({'code': 1, 'msg': '无数据'}), 404
+        # 取 = 后面的内容并分割
+        inner = text.split('=', 1)[1].strip().strip('"')
+        parts = inner.split('~')
+        if len(parts) < 35:
+            return jsonify({'code': 1, 'msg': '数据格式异常'}), 404
+        # 腾讯字段映射（已验证）：
+        # parts[1]=名称 parts[3]=当前价 parts[4]=昨收 parts[5]=今开
+        # parts[32]=日高(压力价) parts[33]=日低(支撑价)
+        # parts[36]=成交量(手=100股) parts[37]=内盘成交量 parts[38]=成交额(万元)
+        # parts[41]=涨跌额 parts[42]=涨跌幅%*100
+        current_price = safe_float(parts[3])
+        yesterday_close = safe_float(parts[4])
+        pct = safe_float(parts[42]) / 100 if safe_float(parts[42]) else 0
+        turnover_wan = safe_float(parts[38])  # 万元
+        volume_hand = safe_float(parts[36])   # 手
+        return jsonify({'code': 0, 'data': {
+            'name': safe_str(parts[1]),
+            'code': code,
+            'price': current_price,
+            'change': round(safe_float(parts[41]), 2),
+            'pct': round(pct, 2),
+            'open': safe_float(parts[5]),
+            'high': safe_float(parts[32]),
+            'low': safe_float(parts[33]),
+            'volume': round(volume_hand / 10000, 2),  # 万手
+            'turnover': round(turnover_wan / 10000, 2),  # 亿元
+            'amplitude': round((safe_float(parts[32]) - safe_float(parts[33])) / yesterday_close * 100, 2) if yesterday_close else 0,
+            'turnover_rate': safe_float(parts[38] if safe_float(parts[38]) < 1000 else 0),  # 成交额<1000万=换手率
+            'market_cap': None,  # 总市值需单独查询
+            'sector': None,  # 题材需单独查询
+        }})
     except Exception as e:
-        return jsonify({'code': 1, 'msg': str(e)}), 500
+        return jsonify({'code': 1, 'msg': f'查询失败: {str(e)}'}), 500
 
 
 @app.route('/api/chat', methods=['POST'])
