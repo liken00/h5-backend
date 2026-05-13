@@ -173,13 +173,15 @@ def parse_tencent_index(data_str):
         yesterday_close = safe_float(parts[5])
         change = price - yesterday_close
         pct = (change / yesterday_close * 100) if yesterday_close else 0
+        # 对齐H5前端字段名：value/changePercent/type
         return {
             'name': name,
             'code': code,
-            'price': round(price, 2),
+            'value': round(price, 2),       # 前端期望 value
             'change': round(change, 2),
-            'pct': round(pct, 2),
-            'status': 'up' if change > 0 else 'down' if change < 0 else 'flat'
+            'changePercent': round(pct, 2),  # 前端期望 changePercent
+            'type': 'up' if change > 0 else 'down' if change < 0 else 'flat',  # 前端期望 type
+            'update_time': datetime.datetime.now().strftime('%H:%M:%S')
         }
     except Exception:
         return None
@@ -361,10 +363,10 @@ def get_indices():
 def get_mock_indices():
     now = datetime.datetime.now()
     return [
-        {'name': '上证指数', 'code': '000001', 'price': 3388.50 + (now.second % 10), 'change': 25.67, 'pct': 0.76, 'status': 'up'},
-        {'name': '深证成指', 'code': '399001', 'price': 10856.30, 'change': -42.15, 'pct': -0.39, 'status': 'down'},
-        {'name': '创业板指', 'code': '399006', 'price': 2234.80, 'change': 18.92, 'pct': 0.85, 'status': 'up'},
-        {'name': '沪深300', 'code': '000300', 'price': 3956.20, 'change': 12.45, 'pct': 0.32, 'status': 'up'},
+        {'name': '上证指数', 'code': '000001', 'value': 3388.50 + (now.second % 10), 'change': 25.67, 'changePercent': 0.76, 'type': 'up', 'update_time': now.strftime('%H:%M:%S')},
+        {'name': '深证成指', 'code': '399001', 'value': 10856.30, 'change': -42.15, 'changePercent': -0.39, 'type': 'down', 'update_time': now.strftime('%H:%M:%S')},
+        {'name': '创业板指', 'code': '399006', 'value': 2234.80, 'change': 18.92, 'changePercent': 0.85, 'type': 'up', 'update_time': now.strftime('%H:%M:%S')},
+        {'name': '沪深300', 'code': '000300', 'value': 3956.20, 'change': 12.45, 'changePercent': 0.32, 'type': 'up', 'update_time': now.strftime('%H:%M:%S')},
     ]
 
 
@@ -419,13 +421,24 @@ def get_stock_detail(code):
         resp = requests.get(f'{TENCENT_BASE}{market}{code}', headers=HEADERS, timeout=10)
         parts = resp.text.split('~')
         if len(parts) > 40:
+            yesterday_close = safe_float(parts[5])
+            price = safe_float(parts[4])
+            pct = (price - yesterday_close) / yesterday_close * 100 if yesterday_close else 0
             return jsonify({'code': 0, 'data': {
                 'name': safe_str(parts[1]),
-                'price': safe_float(parts[4]),
-                'pct': safe_float(parts[33]),
-                'volume_ratio': safe_float(parts[49]),
-                'turnover': safe_float(parts[38]) / 1e8,
-                'ma55': None,
+                'code': code,
+                'price': price,
+                'change': round(price - yesterday_close, 2),
+                'pct': round(pct, 2),
+                'open': safe_float(parts[6]),
+                'high': safe_float(parts[33]),
+                'low': safe_float(parts[34]),
+                'volume': round(safe_float(parts[37]) / 1e8, 2),  # 亿
+                'turnover': safe_float(parts[38]),  # 成交额
+                'amplitude': round((safe_float(parts[33]) - safe_float(parts[34])) / yesterday_close * 100, 2) if yesterday_close else 0,  # 振幅
+                'turnover_rate': safe_float(parts[39]),  # 换手率
+                'market_cap': round(safe_float(parts[45]) / 1e8, 2) if safe_float(parts[45]) else None,  # 总市值亿
+                'sector': safe_str(parts[47]),
             }})
         return jsonify({'code': 1, 'msg': '无数据'}), 404
     except Exception as e:
