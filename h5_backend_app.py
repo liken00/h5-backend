@@ -429,31 +429,31 @@ def get_stock_detail(code):
         parts = inner.split('~')
         if len(parts) < 35:
             return jsonify({'code': 1, 'msg': '数据格式异常'}), 404
-        # 腾讯字段映射（已验证）：
-        # parts[1]=名称 parts[3]=当前价 parts[4]=昨收 parts[5]=今开
-        # parts[32]=日高(压力价) parts[33]=日低(支撑价)
-        # parts[36]=成交量(手=100股) parts[37]=内盘成交量 parts[38]=成交额(万元)
-        # parts[41]=涨跌额 parts[42]=涨跌幅%*100
+        # 腾讯字段映射（已验证，针对000725）：
+        # parts[3]=当前价 parts[4]=昨收 parts[5]=今开
+        # parts[31]=涨跌额 parts[32]=涨跌幅% parts[33]=日高(压力价) parts[34]=日低(支撑价)
+        # parts[36]=成交量(股) parts[37]=成交额(万元) parts[38]=换手率% parts[39]=换手率2?
+        # parts[43]=振幅% parts[44]=总市值亿
         current_price = safe_float(parts[3])
         yesterday_close = safe_float(parts[4])
-        pct = safe_float(parts[42]) / 100 if safe_float(parts[42]) else 0
-        turnover_wan = safe_float(parts[38])  # 万元
-        volume_hand = safe_float(parts[36])   # 手
+        pct = safe_float(parts[32])  # 已经是%
+        turnover_wan = safe_float(parts[37])  # 万元
+        volume_shares = safe_float(parts[36])  # 股
         return jsonify({'code': 0, 'data': {
             'name': safe_str(parts[1]),
             'code': code,
             'price': current_price,
-            'change': round(safe_float(parts[41]), 2),
+            'change': round(safe_float(parts[31]), 2),  # 涨跌额
             'pct': round(pct, 2),
             'open': safe_float(parts[5]),
-            'high': safe_float(parts[32]),
-            'low': safe_float(parts[33]),
-            'volume': round(volume_hand / 10000, 2),  # 万手
+            'high': safe_float(parts[33]),
+            'low': safe_float(parts[34]),
+            'volume': round(volume_shares / 10000 / 100, 2),  # 亿股
             'turnover': round(turnover_wan / 10000, 2),  # 亿元
-            'amplitude': round((safe_float(parts[32]) - safe_float(parts[33])) / yesterday_close * 100, 2) if yesterday_close else 0,
-            'turnover_rate': safe_float(parts[38] if safe_float(parts[38]) < 1000 else 0),  # 成交额<1000万=换手率
-            'market_cap': None,  # 总市值需单独查询
-            'sector': None,  # 题材需单独查询
+            'amplitude': round(safe_float(parts[43]), 2),
+            'turnover_rate': round(safe_float(parts[38]), 2),
+            'market_cap': round(safe_float(parts[44]), 2),  # 亿元
+            'sector': None,
         }})
     except Exception as e:
         return jsonify({'code': 1, 'msg': f'查询失败: {str(e)}'}), 500
