@@ -1,5 +1,5 @@
 """
-涨停复盘宝 - Flask后端
+复盘宝 - Flask后端
 直连腾讯行情API（海外服务器可访问）
 含邀请裂变追踪系统
 """
@@ -485,7 +485,7 @@ def admin_page():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>涨停复盘宝 - 管理后台</title>
+    <title>复盘宝 - 管理后台</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -586,7 +586,7 @@ def admin_page():
 </head>
 <body>
     <div class="container">
-        <h1>📊 涨停复盘宝 - 邀请管理后台</h1>
+        <h1>📊 复盘宝 - 邀请管理后台</h1>
         <div class="stats-row">
             <div class="stat-card"><div class="stat-label">总邀请人数</div><div class="stat-value" id="totalInvites">-</div></div>
             <div class="stat-card"><div class="stat-label">活跃邀请码</div><div class="stat-value green" id="activeCodes">-</div></div>
@@ -1051,5 +1051,5 @@ def logout():
 
 
 if __name__ == '__main__':
-    print('涨停复盘宝后端启动')
+    print('复盘宝后端启动')
     app.run(host='0.0.0.0', port=5000)
