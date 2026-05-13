@@ -685,9 +685,8 @@ def do_send_sms(phone, code):
     SMS_SEND_URL = 'http://api.smsbao.com/sms'
 
     try:
-        # 密码 = md5(md5(api_key))
-        pwd_md5 = hashlib.md5(SMSBAO_API_KEY.encode()).hexdigest()
-        pwd = hashlib.md5(pwd_md5.encode()).hexdigest()
+        # 密码 = md5(api_key)
+        pwd = hashlib.md5(SMSBAO_API_KEY.encode()).hexdigest()
 
         params = urllib.parse.urlencode({
             'u': SMSBAO_USERNAME,
