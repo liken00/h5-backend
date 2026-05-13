@@ -65,9 +65,9 @@ def parse_tencent_index(data_str):
         if len(parts) < 35:
             return None
         name = safe_str(parts[1])
-        code = safe_str(parts[3])
-        price = safe_float(parts[4])
-        yesterday_close = safe_float(parts[5])
+        code = safe_str(parts[2])       # 指数代码
+        price = safe_float(parts[4])    # 当前价格
+        yesterday_close = safe_float(parts[5])  # 昨日收盘
         change = price - yesterday_close
         pct = (change / yesterday_close * 100) if yesterday_close else 0
         return {
