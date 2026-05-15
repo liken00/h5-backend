@@ -21,6 +21,80 @@ CORS(app)
 
 EXECUTOR = ThreadPoolExecutor(max_workers=3)
 
+# ============ MiniMax AI 配置 ============
+MINIMAX_API_KEY = os.environ.get('MINIMAX_API_KEY', 'sk-cp-tSz_vAnJj83nvJ7Gu84q3gzafKbDalI3Wrlb5kZ0cXQIeLcIKfoodIQElYw76G9_4XJooHUFGYIMuF0-0aQCmHrrDjK28R4aXRj3lYs9r417geTOhXrshUo')
+MINIMAX_BASE_URL = 'https://api.minimaxi.com/v1'
+
+# 龙韵智趋系统提示词
+LONGYUN_SYSTEM_PROMPT = """你是一位专业的A股交易专家，擅长龙头股二波战法。你的分析基于「龙韵智趋」交易体系：
+
+## 核心体系
+### 主线确认
+- 同板块≥2只同日2板
+
+### 龙头判断
+- 三板当天封板时间最早=龙头
+- ≥双三板时：四板当天封板时间最早=龙头
+- 题材梯队必须完成（有首板跟上）
+
+### 二波验证
+- 连续两天首板≥5家 + 不跟跌
+
+### 买点信号（三个条件同时满足）
+- 30分钟K线动态MA50均价线（价格回调至此考虑买入）
+- 日K线动态MA10均价线±5%（买入区间）
+- 缩量 + 资金承接 + 题材异动
+
+### 仓位分层
+- 3板回调 → 0.25成
+- 4板回调 → 0.35成
+- 5板回调 → 0.5成
+- 单只最多5成，同时最多持有3只
+
+### 止损规则
+- 跌破日K动态MA10，当日无法收回上方 → 等次日拉涨平仓
+- 主力已撤退 → 永不做此股
+
+### 卖出条件
+- 涨30%-100%范围内，根据题材量能+热度考虑平仓止盈
+- 大盘差 → 跌破即止损
+- 大盘好 → 等收盘，次日找机会平仓
+
+请根据用户提出的股票问题，结合上述体系给出专业分析。回答要简洁专业，适合实战使用。
+"""
+
+def call_minimax_ai(message, system_prompt=LONGYUN_SYSTEM_PROMPT):
+    """调用MiniMax AI API"""
+    headers = {
+        'Authorization': f'Bearer {MINIMAX_API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    payload = {
+        'model': 'MiniMax-Text-01',
+        'messages': [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': message}
+        ],
+        'temperature': 0.7,
+        'max_tokens': 2000
+    }
+    try:
+        resp = requests.post(
+            f'{MINIMAX_BASE_URL}/chat/completions',
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        if resp.status_code == 200:
+            result = resp.json()
+            return result.get('choices', [{}])[0].get('message', {}).get('content', 'AI回复出错')
+        else:
+            return f'AI服务调用失败: {resp.status_code} - {resp.text}'
+    except Exception as e:
+        return f'AI服务异常: {str(e)}'
+
+
+
 # ============ 数据库初始化 ============
 DB_PATH = '/tmp/h5_backend.db'
 
@@ -83,6 +157,16 @@ def init_db():
             expires_at TIMESTAMP NOT NULL,
             used INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS ai_ask_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT UNIQUE NOT NULL,
+            free_trials INTEGER DEFAULT 3,
+            lifetime_access INTEGER DEFAULT 0,
+            total_asks INTEGER DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     conn.commit()
@@ -464,12 +548,95 @@ def get_stock_detail(code):
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
+    """AI问股接口 - 基于龙韵智趋体系"""
     data = request.get_json() or {}
     message = data.get('message', '')
+    phone = data.get('phone', '')
+    
     if not message:
         return jsonify({'code': 1, 'msg': '消息不能为空'}), 400
-    return jsonify({'code': 0, 'data': {'reply': f'收到：{message}。修哥七步法分析中，请稍候...'}})
+    
+    conn = get_db()
+    c = conn.cursor()
+    
+    if phone:
+        c.execute('SELECT free_trials, lifetime_access FROM ai_ask_usage WHERE phone = ?', (phone,))
+        row = c.fetchone()
+        if row:
+            free_trials = row['free_trials']
+            lifetime = row['lifetime_access']
+        else:
+            c.execute('INSERT INTO ai_ask_usage (phone) VALUES (?)', (phone,))
+            conn.commit()
+            free_trials = 3
+            lifetime = 0
+    else:
+        free_trials = 0
+        lifetime = 1
+    
+    if lifetime == 0 and free_trials <= 0:
+        conn.close()
+        return jsonify({
+            'code': 2, 
+            'msg': '免费次数已用完',
+            'data': {
+                'requires_payment': True,
+                'price': 9.9,
+                'unlock_condition': '介绍3人永久解锁'
+            }
+        }), 200
+    
+    ai_reply = call_minimax_ai(message)
+    
+    if phone:
+        if lifetime == 0:
+            c.execute('UPDATE ai_ask_usage SET free_trials = free_trials - 1, total_asks = total_asks + 1, updated_at = CURRENT_TIMESTAMP WHERE phone = ?', (phone,))
+        else:
+            c.execute('UPDATE ai_ask_usage SET total_asks = total_asks + 1, updated_at = CURRENT_TIMESTAMP WHERE phone = ?', (phone,))
+        conn.commit()
+    
+    conn.close()
+    
+    remaining = free_trials - 1 if lifetime == 0 else '无限'
+    return jsonify({
+        'code': 0, 
+        'msg': 'success',
+        'data': {
+            'reply': ai_reply,
+            'remaining_trials': remaining if lifetime == 0 else None,
+            'lifetime_access': lifetime == 1
+        }
+    })
 
+
+@app.route('/api/ai-ask/status', methods=['GET'])
+def ai_ask_status():
+    phone = request.args.get('phone', '')
+    if not phone:
+        return jsonify({'code': 1, 'msg': '手机号不能为空'}), 400
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('SELECT free_trials, lifetime_access, total_asks FROM ai_ask_usage WHERE phone = ?', (phone,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return jsonify({
+            'code': 0,
+            'data': {
+                'free_trials': row['free_trials'],
+                'lifetime_access': row['lifetime_access'] == 1,
+                'total_asks': row['total_asks']
+            }
+        })
+    else:
+        return jsonify({
+            'code': 0,
+            'data': {
+                'free_trials': 3,
+                'lifetime_access': False,
+                'total_asks': 0
+            }
+        })
 
 @app.route('/api/health', methods=['GET'])
 def health():
